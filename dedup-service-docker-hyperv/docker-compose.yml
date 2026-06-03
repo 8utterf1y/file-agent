@@ -1,0 +1,18 @@
+services:
+  dedup-service:
+    build:
+      context: ..
+      dockerfile: dedup-service-docker-hyperv/Dockerfile
+    container_name: dedup-service-hyperv
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/data/dedup.db
+      MINHASH_NUM_PERM: "128"
+      LSH_THRESHOLD: "0.82"
+      MIN_CHUNK_CHARS: "80"
+      MAX_CHUNK_CHARS: "1800"
+    volumes:
+      - ./data:/app/data
+      - ./sample_docs:/data/docs:ro
+    restart: unless-stopped

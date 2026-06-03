@@ -1,0 +1,5 @@
+services:
+  dedup-service:
+    volumes:
+      - ./data:/app/data
+      - D:/company_docs:/data/docs:ro
