@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pycache/
+*.py[cod]
+dedup.db
+.env
+*.egg-info/
