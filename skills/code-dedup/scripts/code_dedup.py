@@ -19,15 +19,19 @@ SUPPORTED_EXTENSIONS = {
 EXCLUDE_DIRS = {
     ".git", "node_modules", "dist", "build", "target", ".venv", "venv", "__pycache__",
     ".pytest_cache", "coverage", ".next", ".nuxt", ".turbo", ".cache", "vendor", "out", "bin",
-    "obj", ".idea", ".vscode",
+    "obj", ".idea", ".vscode", ".opencode", ".agents", ".codex",
 }
 EXCLUDE_FILES = {
     "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.lock", "go.sum",
-    "*.min.js", "*.map", "*.generated.*", "*.pb.go", "*.lock",
+    "*.min.js", "*.map", "*.generated.*", "*.pb.go", "*.lock", "*.pyc",
 }
 CONFIG_EXTENSIONS = {".yaml", ".yml", ".json", ".toml", ".sql", ".sh"}
 TEST_PARTS = {"test", "tests", "__tests__", "fixtures", "fixture", "examples", "example"}
 PROD_PARTS = {"src", "packages", "apps", "app", "lib"}
+SCHEMA_VERSION = "1.1"
+TOOL_NAME = "code-dedup"
+TOOL_VERSION = "0.2.0"
+TOOL_MODE = "read_only_analysis"
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,10 @@ def should_exclude_file(rel_path: str, name: str, patterns: set[str]) -> bool:
     return any(fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel_path, pattern) for pattern in patterns)
 
 
+def should_report_ignored_file(name: str) -> bool:
+    return not fnmatch.fnmatch(name, "*.pyc")
+
+
 def scan_files(root: Path, include: list[str], exclude: list[str], max_file_size_kb: int) -> tuple[list[CodeFile], dict[str, list[str]], dict[str, Any]]:
     ignored = {"directories": [], "files": []}
     coverage: dict[str, Any] = {
@@ -157,7 +165,8 @@ def scan_files(root: Path, include: list[str], exclude: list[str], max_file_size
                 ignored["directories"].append(rel_path)
                 continue
             if should_exclude_file(rel_path, path.name, exclude_patterns):
-                ignored["files"].append(rel_path)
+                if should_report_ignored_file(path.name):
+                    ignored["files"].append(rel_path)
                 continue
             ext = path.suffix.lower()
             if ext not in SUPPORTED_EXTENSIONS:
@@ -660,19 +669,103 @@ def directory_summary(files: list[CodeFile], clusters: list[dict[str, Any]]) -> 
     }
 
 
+def total_unsupported_files(coverage: dict[str, Any]) -> int:
+    return sum(item["files"] for item in coverage.get("unsupported_files_by_extension", []))
+
+
+def quality_warnings(
+    files: list[CodeFile],
+    clusters: list[dict[str, Any]],
+    ignored: dict[str, list[str]],
+    performance: dict[str, int],
+    coverage: dict[str, Any],
+) -> list[dict[str, str]]:
+    warnings: list[dict[str, str]] = []
+    files_scanned = len(files)
+    duplicate_clusters = len(clusters)
+    unsupported_count = total_unsupported_files(coverage)
+    ignored_count = len(ignored.get("files", []))
+
+    def add(code: str, message: str, suggested_action: str) -> None:
+        warnings.append({"code": code, "message": message, "suggested_action": suggested_action})
+
+    if files_scanned == 0:
+        add(
+            "NO_SUPPORTED_FILES",
+            "No supported source/config files were scanned.",
+            "Check run.include, coverage.unsupported_files_by_extension, and supported extensions before concluding there is no duplicate code.",
+        )
+    elif files_scanned < 3:
+        add(
+            "LOW_SUPPORTED_FILE_COUNT",
+            f"Only {files_scanned} supported file(s) were scanned.",
+            "Check coverage.supported_files_by_directory and rerun with a broader --include or additional supported extensions if needed.",
+        )
+
+    if duplicate_clusters == 0 and unsupported_count >= max(10, files_scanned * 3):
+        add(
+            "NO_DUPLICATES_WITH_MANY_UNSUPPORTED_FILES",
+            f"No duplicate clusters were found, but {unsupported_count} unsupported file(s) were skipped by extension.",
+            "Review coverage.unsupported_files_by_extension before treating the zero-result scan as complete.",
+        )
+
+    if performance.get("max_comparisons_reached") == 1:
+        add(
+            "MAX_COMPARISONS_REACHED",
+            "The near-duplicate comparison limit was reached before all candidate pairs were checked.",
+            "Increase --max-comparisons or narrow --include to a smaller source scope and rerun.",
+        )
+
+    if files and all(is_test_path(item.rel_path) for item in files):
+        add(
+            "ONLY_LOW_PRIORITY_PATHS_SCANNED",
+            "Only tests, fixtures, or example paths were scanned.",
+            "Include production source directories if the goal is production-code deduplication.",
+        )
+
+    if ignored_count >= max(10, files_scanned * 2):
+        add(
+            "MANY_IGNORED_FILES",
+            f"{ignored_count} file(s) were ignored by exclude rules, size limits, binary detection, or missing paths.",
+            "Review ignored.files and rerun with adjusted --exclude or --max-file-size-kb when appropriate.",
+        )
+
+    return warnings
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Code Dedup Report",
         "",
         "## Summary",
         "",
-        f"- Root: `{report['summary']['root']}`",
+        f"- Schema version: {report['schema_version']}",
+        f"- Tool: {report['tool']['name']} {report['tool']['version']} ({report['tool']['mode']})",
+        f"- Root: `{report['run']['root']}`",
+        f"- Include: {report['run']['include'] or 'all'}",
+        f"- Exclude: {report['run']['exclude'] or 'defaults only'}",
         f"- Files scanned: {report['summary']['files_scanned']}",
         f"- Chunks scanned: {report['summary']['chunks_scanned']}",
         f"- Duplicate clusters: {report['summary']['duplicate_clusters']}",
         f"- High priority clusters: {report['summary']['high_priority_clusters']}",
         f"- Jaccard comparisons: {report['performance']['jaccard_comparisons']}",
         "",
+        "## Quality Warnings",
+        "",
+    ]
+    if report["quality_warnings"]:
+        for warning in report["quality_warnings"]:
+            lines.extend(
+                [
+                    f"- `{warning['code']}`: {warning['message']}",
+                    f"  Suggested action: {warning['suggested_action']}",
+                ]
+            )
+    else:
+        lines.append("- None.")
+    lines.extend(
+        [
+            "",
         "## Scan Coverage",
         "",
         f"- Scan roots: {', '.join(f'`{item}`' for item in report['coverage']['scan_roots']) or 'N/A'}",
@@ -683,7 +776,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "| Folder | Files |",
         "|---|---:|",
-    ]
+        ]
+    )
     if report["coverage"]["supported_files_by_directory"]:
         for item in report["coverage"]["supported_files_by_directory"]:
             lines.append(f"| `{item['path']}` | {item['files']} |")
@@ -749,21 +843,43 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_report(root: Path, files: list[CodeFile], chunks: list[Chunk], clusters: list[dict[str, Any]], ignored: dict[str, list[str]], performance: dict[str, int], coverage: dict[str, Any]) -> dict[str, Any]:
+def build_run_metadata(root: Path, args: argparse.Namespace, generated_at: str) -> dict[str, Any]:
     return {
+        "root": root.as_posix(),
+        "include": args.include,
+        "exclude": args.exclude,
+        "threshold": args.threshold,
+        "min_lines": args.min_lines,
+        "window_lines": args.window_lines,
+        "window_step": args.window_step,
+        "max_file_size_kb": args.max_file_size_kb,
+        "max_comparisons": args.max_comparisons,
+        "generated_at": generated_at,
+    }
+
+
+def build_report(args: argparse.Namespace, root: Path, files: list[CodeFile], chunks: list[Chunk], clusters: list[dict[str, Any]], ignored: dict[str, list[str]], performance: dict[str, int], coverage: dict[str, Any]) -> dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "tool": {
+            "name": TOOL_NAME,
+            "version": TOOL_VERSION,
+            "mode": TOOL_MODE,
+        },
+        "run": build_run_metadata(root, args, generated_at),
         "summary": {
-            "root": root.as_posix(),
             "files_scanned": len(files),
             "files_ignored": len(ignored["files"]),
             "chunks_scanned": len(chunks),
             "duplicate_clusters": len(clusters),
             "high_priority_clusters": len([item for item in clusters if item["priority"] == "high"]),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
         },
         "performance": performance,
         "coverage": coverage,
         "ignored": ignored,
         "directory_summary": directory_summary(files, clusters),
+        "quality_warnings": quality_warnings(files, clusters, ignored, performance, coverage),
         "clusters": clusters,
     }
 
@@ -804,7 +920,7 @@ def main() -> int:
     near, performance = near_pairs(chunks, args.threshold, args.min_lines, args.max_comparisons)
     pairs = dedupe_pairs(exact + near)
     clusters = build_clusters(pairs, {chunk.chunk_id: chunk for chunk in chunks})
-    report = build_report(root, files, chunks, clusters, ignored, performance, coverage)
+    report = build_report(args, root, files, chunks, clusters, ignored, performance, coverage)
     json_path, md_path = write_reports(report, Path(args.output))
     print(f"Code dedup scan complete: {len(files)} files, {len(chunks)} chunks, {len(clusters)} clusters.")
     print(f"JSON: {json_path}")

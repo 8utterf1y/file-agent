@@ -23,6 +23,7 @@
 
 当报告显示 `duplicate_clusters=0` 或只扫描到很少文件时，不要直接说“整个文件夹没有问题”。必须先区分：
 
+- `quality_warnings`：本次扫描是否低覆盖、跳过太多文件、只扫到低优先级路径或达到比较上限。
 - `coverage.directories_seen`：脚本是否递归看到了子目录。
 - `coverage.supported_files_by_directory`：哪些子目录里有可分析代码文件。
 - `coverage.unsupported_files_by_extension`：是否大量文件因为扩展名不在支持列表而被跳过。
@@ -34,6 +35,19 @@
 - 调整 `--include` 指向真正的源码目录。
 - 放宽 `--min-lines` 或 `--threshold`。
 - 说明该文件夹主要是图片、模型、数据、锁文件或生成产物，当前 skill 默认不分析。
+
+## Quality warnings
+
+Agent 回答时必须优先解释这些 warning：
+
+- `NO_SUPPORTED_FILES`：没有扫描到支持的源码或配置文件。不能得出“没有重复代码”的结论。
+- `LOW_SUPPORTED_FILE_COUNT`：扫描文件数少于 3 个。结论可信度较低，需说明覆盖范围。
+- `NO_DUPLICATES_WITH_MANY_UNSUPPORTED_FILES`：没有重复簇，但有大量不支持扩展名文件。需说明未分析的文件类型。
+- `MAX_COMPARISONS_REACHED`：达到近重复比较上限。需建议缩小范围或提高 `--max-comparisons` 后重跑。
+- `ONLY_LOW_PRIORITY_PATHS_SCANNED`：只扫描到 tests、fixtures、examples。不要把结论推广到生产代码。
+- `MANY_IGNORED_FILES`：被排除、过大、二进制或缺失的文件较多。需查看 `ignored.files`。
+
+如果存在 warning，最终回答应把结论写成“在本次扫描范围内未发现重复”或“本次结果覆盖不足”，而不是绝对地说“项目没有重复代码”。
 
 ## 合并建议规则
 

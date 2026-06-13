@@ -119,13 +119,17 @@
 应该流程：
 
 1. 先读取报告里的 `coverage`、`directory_summary` 和 `ignored`。
-2. 如果覆盖信息不足，用 `rg --files <用户关注目录>` 复核目录下实际文件。
-3. 说明“递归看到了哪些目录”和“哪些目录没有可分析代码文件”，必要时调整参数重跑。
+2. 优先检查 `quality_warnings`，尤其是 `LOW_SUPPORTED_FILE_COUNT`、`NO_SUPPORTED_FILES`、`NO_DUPLICATES_WITH_MANY_UNSUPPORTED_FILES`。
+3. 如果覆盖信息不足，用 `rg --files <用户关注目录>` 复核目录下实际文件。
+4. 说明“递归看到了哪些目录”和“哪些目录没有可分析代码文件”，必要时调整参数重跑。
 
 应该回答：
 
 ```text
 你这个判断是对的，不能只用“0 个重复簇”当结论。
+
+质量提醒：
+- LOW_SUPPORTED_FILE_COUNT：本次只扫描到 3 个受支持代码/配置文件。
 
 本次脚本递归看到了 6 个子目录，但只有 2 个目录包含当前支持的代码文件：
 - .：README.md、requirements.txt
@@ -134,4 +138,35 @@
 其他目录主要是 .png/.jpg 输出资产，所以被默认跳过；这代表“图片资产未分析”，不代表“文件夹内容不存在”。
 
 如果你要分析某个源码子目录，我会用 --include 指向它重跑；如果那些文件是自定义后缀，也需要把后缀加入支持列表。
+```
+
+## 例子 6：报告 schema 被 Agent 消费
+
+用户：
+
+```text
+给我一份机器可读的重复代码扫描结果，并说明哪些结论需要谨慎。
+```
+
+应该流程：
+
+1. 运行脚本生成 JSON。
+2. 读取顶层 `schema_version`、`tool`、`run`、`summary`、`quality_warnings`、`clusters`。
+3. 只把 JSON 当证据，最终仍需用源码上下文复核重要 cluster。
+
+应该回答：
+
+```text
+报告格式：schema_version=1.1，tool=code-dedup 0.2.0，mode=read_only_analysis。
+
+本次扫描参数：
+- root=.
+- include=all
+- threshold=0.86
+- min_lines=12
+
+质量提醒：
+- MAX_COMPARISONS_REACHED：近重复比较达到上限，因此 medium/low 候选可能不完整。
+
+结论：high 级别发现仍可优先复核；目录级统计可参考，但不应把 low 级候选视为完整列表。
 ```
