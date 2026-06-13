@@ -1,0 +1,19 @@
+{
+  "skill_name": "",
+  "evals": [
+    {
+      "id": "",
+      "prompt": "",
+      "expected_output": "",
+      "files": [],
+      "assertions": [
+        {
+          "type": "programmatic",
+          "description": "",
+          "check": ""
+        }
+      ],
+      "risk_tags": []
+    }
+  ]
+}
