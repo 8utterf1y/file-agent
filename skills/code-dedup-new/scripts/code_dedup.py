@@ -34,6 +34,7 @@ TOOL_NAME = "code-dedup"
 TOOL_VERSION = "0.2.0"
 TOOL_MODE = "read_only_analysis"
 TOOL_LANGUAGE = "zh-CN"
+MODES = ("exact", "standard", "deep")
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,56 @@ def resolve_scan_root(root: Path, item: str) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (root / path).resolve()
+
+
+def mode_config(mode: str, args: argparse.Namespace) -> dict[str, Any]:
+    """根据运行模式计算实际使用的分析参数。"""
+    if mode == "exact":
+        return {
+            "cost_level": "low",
+            "near_duplicate_enabled": False,
+            "window_near_enabled": False,
+            "effective_threshold": args.threshold,
+            "effective_min_lines": args.min_lines,
+            "effective_window_lines": args.window_lines,
+            "effective_window_step": args.window_step,
+            "effective_max_comparisons": 0,
+            "top_k": args.top_k or 20,
+        }
+    if mode == "deep":
+        return {
+            "cost_level": "high",
+            "near_duplicate_enabled": True,
+            "window_near_enabled": True,
+            "effective_threshold": min(args.threshold, 0.82),
+            "effective_min_lines": min(args.min_lines, 8),
+            "effective_window_lines": min(args.window_lines, 30),
+            "effective_window_step": min(args.window_step, 10),
+            "effective_max_comparisons": max(args.max_comparisons, 1_000_000),
+            "top_k": args.top_k or 100,
+        }
+    return {
+        "cost_level": "medium",
+        "near_duplicate_enabled": True,
+        "window_near_enabled": True,
+        "effective_threshold": args.threshold,
+        "effective_min_lines": args.min_lines,
+        "effective_window_lines": args.window_lines,
+        "effective_window_step": args.window_step,
+        "effective_max_comparisons": args.max_comparisons,
+        "top_k": args.top_k or 20,
+    }
+
+
+def empty_performance() -> dict[str, int]:
+    """返回未执行近重复分析时的性能指标。"""
+    return {
+        "candidate_pairs": 0,
+        "jaccard_comparisons": 0,
+        "skipped_same_path": 0,
+        "skipped_length": 0,
+        "max_comparisons_reached": 0,
+    }
 
 
 def candidate_files_for(scan_root: Path, root: Path, ignored: dict[str, list[str]], coverage: dict[str, Any]) -> list[Path]:
@@ -376,17 +427,26 @@ def make_config_block(code_file: CodeFile, block: list[tuple[int, str]], min_lin
     return [make_chunk(code_file, "config", None, block[0][0], block[-1][0], raw)]
 
 
-def build_chunks(files: list[CodeFile], min_lines: int, window_lines: int, window_step: int) -> list[Chunk]:
-    """为所有扫描文件构建文件级、符号级和片段级代码块。"""
+def append_unique(chunks: list[Chunk], seen: set[str], new_chunks: list[Chunk]) -> None:
+    """追加未出现过的代码块。"""
+    for chunk in new_chunks:
+        if chunk.chunk_id not in seen:
+            chunks.append(chunk)
+            seen.add(chunk.chunk_id)
+
+
+def build_chunks(files: list[CodeFile], min_lines: int, window_lines: int, window_step: int, mode: str, window_near_enabled: bool) -> list[Chunk]:
+    """按运行模式构建文件级、符号级、配置级和窗口级代码块。"""
     chunks: list[Chunk] = []
+    seen: set[str] = set()
     for code_file in files:
-        chunks.append(file_chunk(code_file))
+        append_unique(chunks, seen, [file_chunk(code_file)])
         symbols = symbol_chunks(code_file, min_lines)
-        chunks.extend(symbols)
+        append_unique(chunks, seen, symbols)
         if code_file.ext in CONFIG_EXTENSIONS:
-            chunks.extend(config_chunks(code_file, min_lines))
-        elif not symbols:
-            chunks.extend(window_chunks(code_file, min_lines, window_lines, window_step))
+            append_unique(chunks, seen, config_chunks(code_file, min_lines))
+        elif window_near_enabled and (mode == "deep" or not symbols):
+            append_unique(chunks, seen, window_chunks(code_file, min_lines, window_lines, window_step))
     return chunks
 
 
@@ -630,7 +690,7 @@ def merge_plan(chunks: list[Chunk], duplicate_type: str, action: str, risk_level
         "candidate_target": target,
         "steps": steps,
         "blockers": blockers,
-        "validation": ["运行相关单元测试和集成测试。", "检查 import/reference/caller。", "检查公共 API、配置加载顺序和调用方行为。"],
+        "validation": ["运行相关单元测试和集成测试。", "检查导入、引用和调用方。", "检查公共 API、配置加载顺序和调用方行为。"],
         "requires_manual_review": True,
         "dry_run_only": True,
     }
@@ -879,6 +939,7 @@ def quality_warnings(
     ignored: dict[str, list[str]],
     performance: dict[str, int],
     coverage: dict[str, Any],
+    run: dict[str, Any],
 ) -> list[dict[str, str]]:
     """根据覆盖面和性能指标生成报告质量预警。"""
     warnings: list[dict[str, str]] = []
@@ -886,10 +947,18 @@ def quality_warnings(
     duplicate_clusters = len(clusters)
     unsupported_count = total_unsupported_files(coverage)
     ignored_count = len(ignored.get("files", []))
+    mode = run["mode"]
 
     def add(code: str, message: str, suggested_action: str) -> None:
         """追加一条质量预警。"""
         warnings.append({"code": code, "message": message, "suggested_action": suggested_action})
+
+    if mode == "exact":
+        add(
+            "EXACT_MODE_SKIPPED_NEAR_DUPLICATES",
+            "当前为 exact 快速模式，仅检测完全重复和规范化完全重复，未执行近重复分析。",
+            "如需分析近重复函数、近重复配置或复制粘贴式逻辑，请使用 --mode standard 或 --mode deep。",
+        )
 
     if files_scanned == 0:
         add(
@@ -917,6 +986,12 @@ def quality_warnings(
             "近重复候选尚未全部比对完就达到了比较上限。",
             "提高 --max-comparisons，或缩小 --include 范围后重跑。",
         )
+        if mode == "deep":
+            add(
+                "DEEP_MODE_MAX_COMPARISONS_REACHED",
+                "深度模式仍达到近重复比较上限，结果可能不完整。",
+                "缩小 --include 范围，或提高 --max-comparisons 后重跑。",
+            )
 
     if files and all(is_test_path(item.rel_path) for item in files):
         add(
@@ -962,6 +1037,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"| 工具 | {report['tool']['name']} {report['tool']['version']} |",
         f"| 模式 | {report['tool']['mode']} |",
         f"| 语言 | {report['tool']['language']} |",
+        f"| 运行模式 | {run['mode']} |",
+        f"| 成本等级 | {run['cost_level']} |",
+        f"| 是否检测近重复 | {yes_no(run['near_duplicate_enabled'])} |",
+        f"| 是否检测窗口级片段 | {yes_no(run['window_near_enabled'])} |",
+        f"| 有效相似度阈值 | {run['effective_threshold']} |",
+        f"| 有效最小行数 | {run['effective_min_lines']} |",
+        f"| 有效最大比较次数 | {run['effective_max_comparisons']} |",
+        f"| 展示上限 | {run['top_k']} |",
         f"| 扫描根目录 | `{markdown_cell(run['root'])}` |",
         f"| include | {markdown_cell(run['include'] or 'all')} |",
         f"| exclude | {markdown_cell(run['exclude'] or 'defaults only')} |",
@@ -1015,7 +1098,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         ]
     )
     if report["clusters"]:
-        for cluster in report["clusters"]:
+        for cluster in report["clusters"][: run["top_k"]]:
             rec = cluster["recommendation"]
             lines.append(
                 f"| `{cluster['cluster_id']}` | {cluster['type']} | {cluster['priority']} | {cluster['risk']} | "
@@ -1044,6 +1127,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         detail_clusters = [cluster for cluster in report["clusters"] if cluster["priority"] == "medium"][:5]
     if not detail_clusters:
         detail_clusters = report["clusters"][:5]
+    detail_clusters = detail_clusters[: run["top_k"]]
 
     lines.extend(["", "## 6. 重点重复项详情", ""])
     if not detail_clusters:
@@ -1112,25 +1196,36 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_run_metadata(root: Path, args: argparse.Namespace, generated_at: str) -> dict[str, Any]:
+def build_run_metadata(root: Path, args: argparse.Namespace, config: dict[str, Any], generated_at: str) -> dict[str, Any]:
     """记录本次扫描的参数和生成时间。"""
     return {
         "root": root.as_posix(),
         "include": args.include,
         "exclude": args.exclude,
+        "mode": args.mode,
+        "cost_level": config["cost_level"],
+        "near_duplicate_enabled": config["near_duplicate_enabled"],
+        "window_near_enabled": config["window_near_enabled"],
         "threshold": args.threshold,
+        "effective_threshold": config["effective_threshold"],
         "min_lines": args.min_lines,
+        "effective_min_lines": config["effective_min_lines"],
         "window_lines": args.window_lines,
+        "effective_window_lines": config["effective_window_lines"],
         "window_step": args.window_step,
+        "effective_window_step": config["effective_window_step"],
         "max_file_size_kb": args.max_file_size_kb,
         "max_comparisons": args.max_comparisons,
+        "effective_max_comparisons": config["effective_max_comparisons"],
+        "top_k": config["top_k"],
         "generated_at": generated_at,
     }
 
 
-def build_report(args: argparse.Namespace, root: Path, files: list[CodeFile], chunks: list[Chunk], clusters: list[dict[str, Any]], ignored: dict[str, list[str]], performance: dict[str, int], coverage: dict[str, Any]) -> dict[str, Any]:
+def build_report(args: argparse.Namespace, config: dict[str, Any], root: Path, files: list[CodeFile], chunks: list[Chunk], clusters: list[dict[str, Any]], ignored: dict[str, list[str]], performance: dict[str, int], coverage: dict[str, Any]) -> dict[str, Any]:
     """组装最终 JSON 报告结构。"""
     generated_at = datetime.now(timezone.utc).isoformat()
+    run = build_run_metadata(root, args, config, generated_at)
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {
@@ -1139,7 +1234,7 @@ def build_report(args: argparse.Namespace, root: Path, files: list[CodeFile], ch
             "mode": TOOL_MODE,
             "language": TOOL_LANGUAGE,
         },
-        "run": build_run_metadata(root, args, generated_at),
+        "run": run,
         "summary": {
             "files_scanned": len(files),
             "files_ignored": len(ignored["files"]),
@@ -1150,7 +1245,7 @@ def build_report(args: argparse.Namespace, root: Path, files: list[CodeFile], ch
         "performance": performance,
         "coverage": coverage,
         "ignored": ignored,
-        "quality_warnings": quality_warnings(files, clusters, ignored, performance, coverage),
+        "quality_warnings": quality_warnings(files, clusters, ignored, performance, coverage, run),
         "directory_summary": directory_summary(files, clusters),
         "clusters": clusters,
     }
@@ -1172,12 +1267,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", default=".")
     parser.add_argument("--include", nargs="*", default=[])
     parser.add_argument("--exclude", nargs="*", default=[])
+    parser.add_argument("--mode", choices=MODES, default="standard")
     parser.add_argument("--threshold", type=float, default=0.86)
     parser.add_argument("--min-lines", type=int, default=12)
     parser.add_argument("--window-lines", type=int, default=40)
     parser.add_argument("--window-step", type=int, default=20)
     parser.add_argument("--max-file-size-kb", type=int, default=1024)
     parser.add_argument("--max-comparisons", type=int, default=200000)
+    parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--output", default=".opencode/reports")
     return parser.parse_args()
 
@@ -1189,13 +1286,29 @@ def main() -> int:
     if not root.is_dir():
         print(f"Root is not a directory: {root}")
         return 2
+    config = mode_config(args.mode, args)
     files, ignored, coverage = scan_files(root, args.include, args.exclude, args.max_file_size_kb)
-    chunks = build_chunks(files, args.min_lines, args.window_lines, args.window_step)
+    chunks = build_chunks(
+        files,
+        config["effective_min_lines"],
+        config["effective_window_lines"],
+        config["effective_window_step"],
+        args.mode,
+        config["window_near_enabled"],
+    )
     exact = exact_pairs(chunks)
-    near, performance = near_pairs(chunks, args.threshold, args.min_lines, args.max_comparisons)
+    near: list[Pair] = []
+    performance = empty_performance()
+    if config["near_duplicate_enabled"]:
+        near, performance = near_pairs(
+            chunks,
+            config["effective_threshold"],
+            config["effective_min_lines"],
+            config["effective_max_comparisons"],
+        )
     pairs = dedupe_pairs(exact + near)
     clusters = build_clusters(pairs, {chunk.chunk_id: chunk for chunk in chunks})
-    report = build_report(args, root, files, chunks, clusters, ignored, performance, coverage)
+    report = build_report(args, config, root, files, chunks, clusters, ignored, performance, coverage)
     json_path, md_path = write_reports(report, Path(args.output))
     print(f"Code dedup scan complete: {len(files)} files, {len(chunks)} chunks, {len(clusters)} clusters.")
     print(f"JSON: {json_path}")

@@ -42,19 +42,38 @@ metadata:
 
 ## 标准工作流
 
-1. 明确扫描范围：全仓库、指定目录、指定语言、只看目录重复或只看合并建议。
-2. 运行 `scripts/code_dedup.py` 生成 JSON 和 Markdown 证据报告。
-3. 先检查 `quality_warnings`、`coverage`、`directory_summary`，再看 `clusters`。
-4. 对高/中优先级或用户关注的重复项，继续读取相关源码片段。
-5. 检查导入、引用、调用方、模块边界、测试覆盖、配置环境、公共 API 和安全/权限/部署影响。
-6. 用中文输出结论、证据表、差异分析、风险和试运行建议，并说明当前未修改任何文件。
+1. 先判断用户意图和扫描范围。
+2. 根据用户表达选择 `exact`、`standard` 或 `deep`。
+3. 如果用户只是在询问报告字段、解释已有结果，或分析某个重复簇，优先读取已有报告和源码，不重新全仓库扫描。
+4. 运行 `scripts/code_dedup.py --mode <exact|standard|deep>` 生成 JSON 和 Markdown 证据报告。
+5. 先检查 `quality_warnings`、`coverage`、`directory_summary`，再看 `clusters`。
+6. 对高/中优先级或用户关注的重复项，继续读取相关源码片段。
+7. 检查导入、引用、调用方、模块边界、测试覆盖、配置环境、公共 API 和安全/权限/部署影响。
+8. 用中文输出结论、证据表、差异分析、风险和试运行建议，并说明当前未修改任何文件。
 
 脚本示例：
 
 ```bash
-python skills/code-dedup/scripts/code_dedup.py --root . --output .opencode/reports
-python skills/code-dedup/scripts/code_dedup.py --root . --include src packages --output .opencode/reports
+python skills/code-dedup-new/scripts/code_dedup.py --root . --mode exact --output .opencode/reports
+python skills/code-dedup-new/scripts/code_dedup.py --root . --mode standard --output .opencode/reports
+python skills/code-dedup-new/scripts/code_dedup.py --root . --mode deep --output .opencode/reports
 ```
+
+## 分析层级
+
+本 Skill 只提供三种运行层级：
+
+| 模式 | 适用场景 | 成本 | 是否默认 |
+|---|---|---:|---|
+| `exact` | 快速检查完全重复文件、完全重复函数/类、完全重复配置 | 低 | 否 |
+| `standard` | 常规代码重复检测、近重复函数/配置分析、合并建议 | 中 | 是 |
+| `deep` | 用户明确要求完整近重复分析或接受较高运行成本 | 高 | 否 |
+
+默认使用 `standard`。
+
+- 用户说“快速”“先看看”“只查完全重复”“不要近重复”时，使用 `exact`。
+- 用户说“扫描重复代码”“给合并建议”“检查当前项目”“分析目录重复”时，使用 `standard`。
+- 用户说“完整扫描”“深度分析”“不要漏掉近重复”“可以跑久一点”“低优先级也展开”时，使用 `deep`。
 
 范围指令映射：
 
