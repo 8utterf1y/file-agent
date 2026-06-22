@@ -1021,6 +1021,11 @@ def yes_no(value: bool) -> str:
     return "是" if value else "否"
 
 
+def cluster_count_by_priority(clusters: list[dict[str, Any]], priority_name: str) -> int:
+    """统计指定优先级的重复簇数量。"""
+    return len([cluster for cluster in clusters if cluster["priority"] == priority_name])
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     """把 JSON 报告渲染为中文 Markdown 表格报告。"""
     run = report["run"]
@@ -1125,13 +1130,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     detail_clusters = [cluster for cluster in report["clusters"] if cluster["priority"] == "high"]
     if not detail_clusters:
         detail_clusters = [cluster for cluster in report["clusters"] if cluster["priority"] == "medium"][:5]
-    if not detail_clusters:
-        detail_clusters = report["clusters"][:5]
     detail_clusters = detail_clusters[: run["top_k"]]
 
-    lines.extend(["", "## 6. 重点重复项详情", ""])
+    lines.extend(["", "## 6. 高/中优先级重复项详情", ""])
     if not detail_clusters:
-        lines.append("- 本次扫描未发现可展开的重复簇。")
+        lines.append("- 本次扫描未发现需要默认展开的高/中优先级重复簇。")
 
     for cluster in detail_clusters:
         rec = cluster["recommendation"]
@@ -1190,7 +1193,42 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.extend(f"- {step}" for step in cluster["suggested_agent_steps"])
         lines.append("")
 
-    lines.append("## 7. 当前操作状态")
+    low_clusters = [cluster for cluster in report["clusters"] if cluster["priority"] == "low"]
+    lines.extend(
+        [
+            "## 7. 低优先级重复项",
+            "",
+            f"- 低优先级重复簇数量：{len(low_clusters)}",
+            "- 默认不展开低优先级重复项详情；如需复核，请指定具体重复簇编号或使用更大的 `--top-k` 重新生成报告。",
+            "",
+            "| 类型 | 数量 |",
+            "|---|---:|",
+        ]
+    )
+    low_by_type: dict[str, int] = defaultdict(int)
+    for cluster in low_clusters:
+        low_by_type[cluster["type"]] += 1
+    if low_by_type:
+        for duplicate_type, count in sorted(low_by_type.items()):
+            lines.append(f"| {duplicate_type} | {count} |")
+    else:
+        lines.append("| 无 | 0 |")
+
+    lines.extend(
+        [
+            "",
+            "## 8. 下一步复核建议",
+            "",
+            f"- 高优先级重复簇：{cluster_count_by_priority(report['clusters'], 'high')} 个。",
+            f"- 中优先级重复簇：{cluster_count_by_priority(report['clusters'], 'medium')} 个。",
+            f"- 低优先级重复簇：{cluster_count_by_priority(report['clusters'], 'low')} 个。",
+            "- 若用户关注某个重复簇，优先读取已有 JSON 报告并只复核该重复簇涉及的源码和引用。",
+            "- 若用户批准修改，进入单独补丁/重构工作流，重新读取源码并生成最小补丁计划。",
+            "",
+        ]
+    )
+
+    lines.append("## 9. 当前操作状态")
     lines.append("")
     lines.append("- 本报告仅由只读扫描生成；当前未修改任何文件。")
     return "\n".join(lines) + "\n"
