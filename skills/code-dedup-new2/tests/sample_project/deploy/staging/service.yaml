@@ -1,0 +1,14 @@
+service:
+  name: sample-service
+  port: 8080
+  replicas: 2
+  env:
+    LOG_LEVEL: info
+    FEATURE_FLAG: enabled
+  resources:
+    cpu: "500m"
+    memory: "256Mi"
+  healthcheck:
+    path: /health
+    interval: 30
+
