@@ -678,7 +678,7 @@ def merge_plan(chunks: list[Chunk], duplicate_type: str, action: str, risk_level
         blockers = ["即使文件完全相同，也不能直接删除；必须先确认引用关系和发布影响。"]
     elif action == "extract_helper":
         target = f"src/shared/{chunks[0].language}_helper"
-        steps = ["确认重复窗口不是偶然流程相似。", f"抽取最小公共 helper 到 `{target}`。", "保留原模块差异逻辑。", "运行相关测试。"]
+        steps = ["确认重复窗口不是偶然流程相似。", f"抽取最小公共辅助逻辑到 `{target}`。", "保留原模块差异逻辑。", "运行相关测试。"]
         blockers = ["窗口近重复不能证明语义等价。"]
     else:
         target = None
@@ -763,7 +763,7 @@ def evidence_tables(chunks: list[Chunk], cluster_pairs: list[Pair]) -> dict[str,
 
 
 def difference_analysis(chunks: list[Chunk], duplicate_type: str) -> dict[str, Any]:
-    """给出需要 Agent 继续复核的相似点和不确定点。"""
+    """给出需要执行者继续复核的相似点和不确定点。"""
     return {
         "status": "needs_agent_source_review",
         "similarities": [
@@ -772,7 +772,7 @@ def difference_analysis(chunks: list[Chunk], duplicate_type: str) -> dict[str, A
         ],
         "differences_or_unknowns": [
             "脚本不会判断业务语义等价。",
-            "需要 Agent 读取源码确认输入输出、副作用、异常处理、边界条件和领域差异。",
+            "需要执行者读取源码确认输入输出、副作用、异常处理、边界条件和领域差异。",
         ],
         "review_dimensions": [
             "输入输出契约",
@@ -791,17 +791,17 @@ def call_reference_analysis(chunks: list[Chunk]) -> dict[str, Any]:
     return {
         "status": "not_checked_by_script",
         "checks": [
-            {"item": "导入/引用检查", "result": "not_checked_by_script", "note": "Agent 需要使用搜索或语言工具检查引用。"},
-            {"item": "调用方影响", "result": "not_checked_by_script", "note": "Agent 需要确认调用方参数、返回值和异常契约。"},
+            {"item": "导入/引用检查", "result": "not_checked_by_script", "note": "执行者需要使用搜索或语言工具检查引用。"},
+            {"item": "调用方影响", "result": "not_checked_by_script", "note": "执行者需要确认调用方参数、返回值和异常契约。"},
             {"item": "公共 API 影响", "result": "not_checked_by_script", "note": "涉及导出符号、路由、命令行入口、配置入口时需谨慎。"},
-            {"item": "测试覆盖", "result": "not_checked_by_script", "note": "Agent 需要定位并运行相关测试。"},
+            {"item": "测试覆盖", "result": "not_checked_by_script", "note": "执行者需要定位并运行相关测试。"},
         ],
         "paths_to_review": sorted({chunk.path for chunk in chunks}),
     }
 
 
 def suggested_agent_steps(chunks: list[Chunk], duplicate_type: str, risk_level: str) -> list[str]:
-    """为 Agent 生成下一步源码复核建议。"""
+    """为执行者生成下一步源码复核建议。"""
     paths = ", ".join(sorted({chunk.path for chunk in chunks})[:4])
     steps = [
         f"读取重复簇涉及文件：{paths}。",
@@ -870,7 +870,7 @@ def recommendation_reason(duplicate_type: str) -> str:
         "file_normalized_exact": "规范化后相同，但注释或格式可能包含意图。",
         "symbol_exact": "符号级实现相同，可考虑抽取共享实现。",
         "symbol_near": "符号级近重复，可能存在边界或领域差异。",
-        "window_near": "连续逻辑片段相似，可评估是否抽 helper。",
+        "window_near": "连续逻辑片段相似，可评估是否抽辅助逻辑。",
         "config_duplicate": "配置或脚本片段重复，但环境差异需要人工确认。",
     }.get(duplicate_type, "重复证据需要人工审核。")
 
@@ -1189,7 +1189,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.extend(f"- {blocker}" for blocker in plan["blockers"])
         lines.extend(["", "验证方式："])
         lines.extend(f"- {item}" for item in plan["validation"])
-        lines.extend(["", "Agent 后续复核步骤："])
+        lines.extend(["", "后续复核步骤："])
         lines.extend(f"- {step}" for step in cluster["suggested_agent_steps"])
         lines.append("")
 
@@ -1301,19 +1301,28 @@ def write_reports(report: dict[str, Any], output: Path) -> tuple[Path, Path]:
 
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
-    parser = argparse.ArgumentParser(description="Read-only code duplicate scanner for OpenCode skills.")
-    parser.add_argument("--root", default=".")
-    parser.add_argument("--include", nargs="*", default=[])
-    parser.add_argument("--exclude", nargs="*", default=[])
-    parser.add_argument("--mode", choices=MODES, default="standard")
-    parser.add_argument("--threshold", type=float, default=0.86)
-    parser.add_argument("--min-lines", type=int, default=12)
-    parser.add_argument("--window-lines", type=int, default=40)
-    parser.add_argument("--window-step", type=int, default=20)
-    parser.add_argument("--max-file-size-kb", type=int, default=1024)
-    parser.add_argument("--max-comparisons", type=int, default=200000)
-    parser.add_argument("--top-k", type=int, default=None)
-    parser.add_argument("--output", default=".opencode/reports")
+    parser = argparse.ArgumentParser(
+        description="Read-only code duplicate scanner for OpenCode skills.",
+        epilog=(
+            "Examples:\n"
+            "  python scripts/code_dedup.py --root . --mode exact --output .opencode/reports\n"
+            "  python scripts/code_dedup.py --root . --include src packages --mode standard\n"
+            "  python scripts/code_dedup.py --root . --mode deep --top-k 100"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--root", default=".", help="扫描根目录，默认当前目录。")
+    parser.add_argument("--include", nargs="*", default=[], help="只扫描指定目录或文件；不传表示扫描 root 下全部可分析文件。")
+    parser.add_argument("--exclude", nargs="*", default=[], help="额外排除的文件名、路径或 glob 模式。")
+    parser.add_argument("--mode", choices=MODES, default="standard", help="运行模式：exact 快速精确重复，standard 默认分析，deep 高召回分析。")
+    parser.add_argument("--threshold", type=float, default=0.86, help="近重复 Jaccard 相似度阈值，standard 默认 0.86。")
+    parser.add_argument("--min-lines", type=int, default=12, help="参与符号、配置或窗口分析的最小非空行数。")
+    parser.add_argument("--window-lines", type=int, default=40, help="窗口级近重复分析的窗口行数。")
+    parser.add_argument("--window-step", type=int, default=20, help="窗口级近重复分析的滑动步长。")
+    parser.add_argument("--max-file-size-kb", type=int, default=1024, help="单文件最大读取大小，超过后跳过。")
+    parser.add_argument("--max-comparisons", type=int, default=200000, help="近重复 Jaccard 最大比较次数。")
+    parser.add_argument("--top-k", type=int, default=None, help="Markdown 报告默认展开或展示的重复簇数量；exact/standard 默认 20，deep 默认 100。")
+    parser.add_argument("--output", default=".opencode/reports", help="报告输出目录，会写入 JSON 和 Markdown。")
     return parser.parse_args()
 
 

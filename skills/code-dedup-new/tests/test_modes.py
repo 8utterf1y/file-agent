@@ -11,6 +11,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_ROOT.parents[1]
 SCRIPT = SKILL_ROOT / "scripts" / "code_dedup.py"
 SAMPLE_PROJECT = SKILL_ROOT / "tests" / "sample_project"
+SKILL_MD = SKILL_ROOT / "SKILL.md"
 
 
 def run_scan(tmp_path: Path, mode: str) -> dict:
@@ -53,6 +54,18 @@ def cluster_paths(report: dict) -> set[str]:
         for member in cluster["members"]:
             paths.add(member["path"])
     return paths
+
+
+def test_skill_frontmatter_format() -> None:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    end = text.find("\n---\n", 4)
+    assert end != -1
+    frontmatter = text[4:end]
+    body = text[end + len("\n---\n") :]
+    assert "\nname: code-dedup\n" in f"\n{frontmatter}\n"
+    assert "description:" in frontmatter
+    assert body.lstrip().startswith("# Code Dedup")
 
 
 def test_exact_mode_runs(tmp_path: Path) -> None:
